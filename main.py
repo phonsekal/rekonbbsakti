@@ -5,7 +5,7 @@ import openpyxl
 import io
 import re
 
-app = FastAPI(title="Reconciliation System API & Web UI", version="9.0")
+app = FastAPI(title="Reconciliation System API & Web UI", version="10.0")
 
 def clean_currency(value):
     if pd.isna(value):
@@ -49,7 +49,7 @@ def format_number_clean(val: float) -> str:
         return f"({abs(val_int):,})".replace(",", ".")
     return f"{val_int:,}".replace(",", ".")
 
-def extract_satker_from_code(kd_bb_val, default_satker="UNASSIGNED"):
+def extract_satker_from_code(kd_bb_val, default_satker="693266"):
     """Ekstraksi kode Satker dari string seperti BEN-693266-520529242"""
     val_str = str(kd_bb_val or "").strip()
     match = re.search(r'BEN-(\d+)-', val_str)
@@ -58,69 +58,76 @@ def extract_satker_from_code(kd_bb_val, default_satker="UNASSIGNED"):
     return default_satker
 
 def parse_sakti_excel(contents: bytes):
-    """Ekstraksi otomatis file Buku Besar SAKTI (.xlsx / .xls)"""
-    wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True)
-    ws = wb.active
+    """Ekstraksi cepat & ramah memori Vercel untuk file Buku Besar SAKTI (.xlsx / .xls)"""
+    try:
+        wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True, read_only=True)
+        ws = wb.active
 
-    kode_akun = "-"
-    nama_akun = "-"
-    satker_header = "-"
-    
-    # Ambil Header Satker dari Baris 8
-    satker_cell = str(ws.cell(8, 5).value or "").strip()
-    if satker_cell:
-        satker_header = satker_cell
+        kode_akun = "-"
+        nama_akun = "-"
+        satker_header = "693266"
 
-    # Ambil Header Akun dari Baris 10
-    header_val = str(ws.cell(10, 1).value or "").strip()
-    if "BUKU BESAR" in header_val:
-        parts = header_val.replace("BUKU BESAR", "").strip().split(" ", 1)
-        kode_akun = parts[0] if len(parts) > 0 else "-"
-        nama_akun = parts[1] if len(parts) > 1 else "-"
+        records = []
 
-    records = []
-    
-    for r in range(11, ws.max_row + 1):
-        col_a = ws.cell(r, 1).value  # TGL JNL
-        col_c = ws.cell(r, 3).value  # KD BUKU BESAR
-        col_d = ws.cell(r, 4).value  # NO DOK
-        col_f = ws.cell(r, 6).value  # BAESWILSATK
-        col_i = ws.cell(r, 9).value  # DEBET
-        col_j = ws.cell(r, 10).value # KREDIT
-        
-        # Skip header / footer / total
-        if str(col_a or "").startswith("BUKU BESAR") or str(col_a or "").strip() == "TGL JNL":
-            continue
-        if str(col_c or "").strip() == "SALDO":
-            continue
-        if col_a is None and col_c is None:
-            continue
-            
-        if col_a is not None and col_c is not None:
-            debet_val = clean_currency(col_i)
-            kredit_val = clean_currency(col_j)
-            net_nilai = debet_val - kredit_val
-            
-            # Ekstraksi Kode Satker
-            kode_satker = extract_satker_from_code(col_c, default_satker=satker_header)
+        for r_idx, row in enumerate(ws.iter_rows(values_only=True), start=1):
+            if r_idx < 8:
+                continue
 
-            tgl_dt = pd.to_datetime(col_a, errors='coerce')
-            periode_str = tgl_dt.strftime('%Y-%m') if pd.notna(tgl_dt) else ""
-            tgl_str = tgl_dt.strftime('%Y-%m-%d') if pd.notna(tgl_dt) else str(col_a)
+            if r_idx == 8:
+                satker_cell = str(row[4] or "").strip() if len(row) > 4 else ""
+                if satker_cell:
+                    satker_header = satker_cell
+                continue
 
-            records.append({
-                'col_kode_akun': kode_akun,
-                'col_nama_akun': nama_akun,
-                'col_kode_satker': kode_satker,
-                'col_tgl_jurnal': tgl_str,
-                'col_kode_periode': periode_str,
-                'col_no_doc': str(col_d or ""),
-                'col_deskripsi': str(col_c or ""),
-                'nilai_clean': net_nilai,
-                'tgl_dt': tgl_dt
-            })
-            
-    return pd.DataFrame(records), kode_akun, nama_akun
+            if r_idx == 10:
+                header_val = str(row[0] or "").strip()
+                if "BUKU BESAR" in header_val:
+                    parts = header_val.replace("BUKU BESAR", "").strip().split(" ", 1)
+                    kode_akun = parts[0] if len(parts) > 0 else "-"
+                    nama_akun = parts[1] if len(parts) > 1 else "-"
+                continue
+
+            if r_idx >= 11:
+                col_a = row[0] if len(row) > 0 else None  # TGL JNL
+                col_c = row[2] if len(row) > 2 else None  # KD BUKU BESAR
+                col_d = row[3] if len(row) > 3 else None  # NO DOK
+                col_i = row[8] if len(row) > 8 else None  # DEBET
+                col_j = row[9] if len(row) > 9 else None  # KREDIT
+
+                if str(col_a or "").startswith("BUKU BESAR") or str(col_a or "").strip() == "TGL JNL":
+                    continue
+                if str(col_c or "").strip() == "SALDO":
+                    continue
+                if col_a is None and col_c is None:
+                    continue
+
+                if col_a is not None and col_c is not None:
+                    debet_val = clean_currency(col_i)
+                    kredit_val = clean_currency(col_j)
+                    net_nilai = debet_val - kredit_val
+
+                    kode_satker = extract_satker_from_code(col_c, default_satker=satker_header)
+
+                    tgl_dt = pd.to_datetime(col_a, errors='coerce')
+                    periode_str = tgl_dt.strftime('%Y-%m') if pd.notna(tgl_dt) else ""
+                    tgl_str = tgl_dt.strftime('%Y-%m-%d') if pd.notna(tgl_dt) else str(col_a)
+
+                    records.append({
+                        'col_kode_akun': kode_akun,
+                        'col_nama_akun': nama_akun,
+                        'col_kode_satker': kode_satker,
+                        'col_tgl_jurnal': tgl_str,
+                        'col_kode_periode': periode_str,
+                        'col_no_doc': str(col_d or ""),
+                        'col_deskripsi': str(col_c or ""),
+                        'nilai_clean': net_nilai,
+                        'tgl_dt': tgl_dt
+                    })
+
+        wb.close()
+        return pd.DataFrame(records), kode_akun, nama_akun
+    except Exception as e:
+        raise HTTPException(status_code=400, detail=f"Gagal membaca file Excel SAKTI: {str(e)}")
 
 def process_reconciliation(df: pd.DataFrame, filter_mode: str = 'ALL', target_period: str = '', target_satker: str = 'ALL', is_sakti_excel: bool = False):
     if is_sakti_excel:
@@ -150,15 +157,15 @@ def process_reconciliation(df: pd.DataFrame, filter_mode: str = 'ALL', target_pe
         kode_akun_header = str(df[col_kode_akun].iloc[0]).strip() if not df.empty else "-"
         nama_akun_header = str(df[col_nama_akun].iloc[0]).strip() if not df.empty else "-"
 
-        df['satker_str'] = df[col_deskripsi].apply(lambda x: extract_satker_from_code(x, "ALL"))
+        df['satker_str'] = df[col_deskripsi].apply(lambda x: extract_satker_from_code(x, "693266"))
         df['periode_str'] = df[col_kode_periode].astype(str).str.strip()
         df['nilai_clean'] = df[col_l_name].apply(clean_currency)
         df['tgl_dt'] = pd.to_datetime(df[col_tgl_jurnal], errors='coerce', dayfirst=True)
 
-    # Ambil daftar unik Satker untuk dikirimkan ke Dropdown UI
-    available_satkers = sorted(list(set(df['satker_str'].dropna().unique())))
+    # Ambil seluruh daftar unik Satker untuk dropdown hasil
+    available_satkers = sorted([s for s in df['satker_str'].dropna().unique() if s != ""])
 
-    # Apply Filter Satker jika tidak memilih 'ALL'
+    # Filter berdasarkan Satker jika dipilih
     if target_satker and target_satker != 'ALL':
         df = df[df['satker_str'] == target_satker].copy()
 
@@ -224,7 +231,7 @@ def process_reconciliation(df: pd.DataFrame, filter_mode: str = 'ALL', target_pe
                         "nilai_clean": pair_row['nilai_clean']
                     })
 
-    # 3. Post-Period Check (Tabel 3)
+    # 3. Post-Period Check (Tabel 3: Penyelesaian / Transaksi Menggantung Pasca Periode X)
     hanging_list = []
     if filter_mode == 'UNTIL' and target_period:
         post_df = df[df['periode_str'] > target_period].copy()
@@ -246,22 +253,24 @@ def process_reconciliation(df: pd.DataFrame, filter_mode: str = 'ALL', target_pe
                     post_df.loc[neg_indices[i], 'matched_post'] = True
 
             post_unmatched = post_df[~post_df['matched_post']].copy()
-            first_digit = kode_akun_header[0] if len(kode_akun_header) > 0 else "1"
+            first_digit = kode_akun_header[0] if len(kode_akun_header) > 0 and kode_akun_header[0].isdigit() else "1"
 
             if first_digit in ['1', '5']:
                 target_sign_df = post_unmatched[post_unmatched['nilai_clean'] < 0].copy()
                 opp_sign_df = post_df[post_df['nilai_clean'] > 0].copy()
 
-                if not target_sign_df.empty and not opp_sign_df.empty:
-                    min_opp_date = opp_sign_df['tgl_dt'].min()
-                    target_sign_df = target_sign_df[target_sign_df['tgl_dt'] <= min_opp_date]
+                if not target_sign_df.empty:
+                    if not opp_sign_df.empty:
+                        min_opp_date = opp_sign_df['tgl_dt'].min()
+                        target_sign_df = target_sign_df[target_sign_df['tgl_dt'] <= min_opp_date]
             else:
                 target_sign_df = post_unmatched[post_unmatched['nilai_clean'] > 0].copy()
                 opp_sign_df = post_df[post_df['nilai_clean'] < 0].copy()
 
-                if not target_sign_df.empty and not opp_sign_df.empty:
-                    min_opp_date = opp_sign_df['tgl_dt'].min()
-                    target_sign_df = target_sign_df[target_sign_df['tgl_dt'] <= min_opp_date]
+                if not target_sign_df.empty:
+                    if not opp_sign_df.empty:
+                        min_opp_date = opp_sign_df['tgl_dt'].min()
+                        target_sign_df = target_sign_df[target_sign_df['tgl_dt'] <= min_opp_date]
 
             if not target_sign_df.empty:
                 for _, r in target_sign_df.iterrows():
@@ -273,7 +282,7 @@ def process_reconciliation(df: pd.DataFrame, filter_mode: str = 'ALL', target_pe
                         "nilai_clean": r['nilai_clean']
                     })
 
-    # Formatting Output Tables
+    # Output Formatting
     if not unmatched_main.empty:
         unmatched_main['Nilai'] = unmatched_main['nilai_clean'].apply(format_number_clean)
         unmatched_main['Kode Satker'] = unmatched_main['satker_str']
@@ -390,12 +399,13 @@ async def home_ui():
     <main class="max-w-6xl mx-auto px-6 py-10 w-full flex-grow">
         <div class="mb-8">
             <h1 class="text-3xl font-extrabold text-white tracking-tight mb-2">Rekonsiliasi Transaksi (Debet / Kredit)</h1>
-            <p class="text-sm text-slate-400">Pembersihan laporan Buku Besar SAKTI (.xlsx) & Pengelompokan Otomatis Per Satker.</p>
+            <p class="text-sm text-slate-400">Pembersihan Laporan Buku Besar SAKTI (.xlsx / .csv) & Analisis Rekonsiliasi Otomatis.</p>
         </div>
 
+        <!-- Upload Form -->
         <div id="uploadSection" class="bg-card rounded-2xl border border-dark p-8 mb-8 shadow-xl">
             <form id="uploadForm" class="space-y-6">
-                <div class="grid grid-cols-1 md:grid-cols-3 gap-4 bg-[#0b0f17] p-4 rounded-xl border border-dark">
+                <div class="grid grid-cols-1 md:grid-cols-2 gap-4 bg-[#0b0f17] p-4 rounded-xl border border-dark">
                     <div>
                         <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
                             <i class="fa-solid fa-filter brand-cyan mr-1"></i> Mode Filter Periode
@@ -427,15 +437,6 @@ async def home_ui():
                             <option value="2026-12">2026-12</option>
                         </select>
                     </div>
-
-                    <div>
-                        <label class="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-                            <i class="fa-solid fa-building-columns brand-cyan mr-1"></i> Filter Kode Satker
-                        </label>
-                        <select id="targetSatker" name="target_satker" class="w-full bg-[#111827] border border-dark text-slate-200 text-xs rounded-lg p-2.5 focus:border-[#00d2ff] outline-none">
-                            <option value="ALL">Semua Satker</option>
-                        </select>
-                    </div>
                 </div>
 
                 <div id="dropZone" class="border border-dashed border-slate-700 rounded-xl p-10 transition-all hover:border-[#00d2ff] hover:bg-[#0b0f17]/50 cursor-pointer flex flex-col items-center justify-center text-center">
@@ -457,16 +458,31 @@ async def home_ui():
             </div>
         </div>
 
+        <!-- Output Result Section -->
         <div id="resultSection" class="hidden space-y-8">
+            <!-- Information Card with Satker Dropdown -->
             <div class="bg-card border border-dark rounded-xl p-6 flex flex-col sm:flex-row justify-between items-start sm:items-center gap-4">
                 <div>
                     <span class="text-[10px] font-bold uppercase tracking-widest text-slate-500 block mb-1">Informasi Akun</span>
                     <h2 id="displayNamaAkun" class="text-xl font-bold text-white mb-1">-</h2>
                     <p class="text-xs text-slate-400">Kode Akun: <span id="displayKodeAkun" class="font-mono brand-cyan font-semibold">-</span></p>
                 </div>
-                <button id="btnReset" class="text-xs font-semibold px-4 py-2 border border-dark rounded-lg hover:bg-slate-800 text-slate-300 flex items-center gap-2">
-                    <i class="fa-solid fa-arrow-left"></i> Upload File Lain
-                </button>
+
+                <div class="flex items-center space-x-3 w-full sm:w-auto">
+                    <!-- Dropdown Filter Satker yang muncul setelah data selesai diolah -->
+                    <div class="flex flex-col">
+                        <label class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
+                            <i class="fa-solid fa-building-columns brand-cyan mr-1"></i> Filter Satker
+                        </label>
+                        <select id="targetSatkerResult" class="bg-[#0b0f17] border border-dark text-slate-200 text-xs rounded-lg p-2 focus:border-[#00d2ff] outline-none">
+                            <option value="ALL">Semua Satker</option>
+                        </select>
+                    </div>
+
+                    <button id="btnReset" class="mt-4 sm:mt-0 text-xs font-semibold px-4 py-2.5 border border-dark rounded-lg hover:bg-slate-800 text-slate-300 flex items-center gap-2">
+                        <i class="fa-solid fa-arrow-left"></i> File Lain
+                    </button>
+                </div>
             </div>
 
             <!-- TABEL 1 -->
@@ -507,7 +523,7 @@ async def home_ui():
                 <div class="p-5 border-b border-dark flex items-center justify-between bg-rose-950/20">
                     <div>
                         <h3 class="font-bold text-rose-300 text-sm">Daftar Transaksi Menggantung Tanpa Pasangan Pasca Periode X</h3>
-                        <p class="text-xs text-slate-400">Transaksi tanpa pasangan setelah periode X yang tanggalnya mendahului transaksi pembuka periode selanjutnya.</p>
+                        <p class="text-xs text-slate-400">Transaksi tanpa pasangan setelah periode X yang perlu diselesaikan.</p>
                     </div>
                     <span class="bg-rose-500/10 text-rose-400 border border-rose-500/20 text-[10px] px-2.5 py-1 rounded-full font-mono">Hanging Post-Check</span>
                 </div>
@@ -537,10 +553,12 @@ async def home_ui():
         const resultSection = document.getElementById('resultSection');
         const filterMode = document.getElementById('filterMode');
         const targetPeriod = document.getElementById('targetPeriod');
-        const targetSatker = document.getElementById('targetSatker');
+        const targetSatkerResult = document.getElementById('targetSatkerResult');
 
         const resolvedSection = document.getElementById('resolvedSection');
         const hangingSection = document.getElementById('hangingSection');
+
+        let currentFile = null;
 
         filterMode.addEventListener('change', () => {
             if (filterMode.value === 'ALL') {
@@ -556,25 +574,36 @@ async def home_ui():
 
         csvFileInput.addEventListener('change', (e) => {
             if (e.target.files.length > 0) {
-                fileLabel.innerHTML = `File terpilih: <span class="brand-cyan font-bold">${e.target.files[0].name}</span>`;
+                currentFile = e.target.files[0];
+                fileLabel.innerHTML = `File terpilih: <span class="brand-cyan font-bold">${currentFile.name}</span>`;
                 btnSubmit.disabled = false;
             }
         });
 
         uploadForm.addEventListener('submit', async (e) => {
             e.preventDefault();
-            if (!csvFileInput.files[0]) return;
+            if (!currentFile) return;
 
             if (filterMode.value !== 'ALL' && !targetPeriod.value) {
                 alert("Silakan pilih Periode X terlebih dahulu!");
                 return;
             }
 
+            fetchAndDisplayData('ALL');
+        });
+
+        targetSatkerResult.addEventListener('change', () => {
+            fetchAndDisplayData(targetSatkerResult.value);
+        });
+
+        async function fetchAndDisplayData(selectedSatker) {
+            if (!currentFile) return;
+
             const formData = new FormData();
-            formData.append('file', csvFileInput.files[0]);
+            formData.append('file', currentFile);
             formData.append('filter_mode', filterMode.value);
             formData.append('target_period', targetPeriod.value);
-            formData.append('target_satker', targetSatker.value);
+            formData.append('target_satker', selectedSatker);
 
             loading.classList.remove('hidden');
             btnSubmit.disabled = true;
@@ -601,16 +630,16 @@ async def home_ui():
                 btnSubmit.disabled = false;
                 alert("Gagal menghubungkan ke server: " + err.message);
             }
-        });
+        }
 
         function updateSatkerDropdown(satkerList, currentSelected) {
-            targetSatker.innerHTML = '<option value="ALL">Semua Satker</option>';
+            targetSatkerResult.innerHTML = '<option value="ALL">Semua Satker</option>';
             satkerList.forEach(satker => {
                 const opt = document.createElement('option');
                 opt.value = satker;
                 opt.innerText = `Satker: ${satker}`;
                 if (satker === currentSelected) opt.selected = true;
-                targetSatker.appendChild(opt);
+                targetSatkerResult.appendChild(opt);
             });
         }
 
@@ -702,6 +731,7 @@ async def home_ui():
 
         document.getElementById('btnReset').addEventListener('click', () => {
             csvFileInput.value = '';
+            currentFile = null;
             fileLabel.innerHTML = 'Unggah File CSV / Buku Besar Excel (.xlsx)';
             btnSubmit.disabled = true;
             resultSection.classList.add('hidden');
