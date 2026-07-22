@@ -5,10 +5,10 @@ import openpyxl
 import io
 import re
 
-app = FastAPI(title="Reconciliation System API & Web UI", version="10.0")
+app = FastAPI(title="Reconciliation System API & Web UI", version="11.0")
 
 def clean_currency(value):
-    if pd.isna(value):
+    if pd.isna(value) or value is None:
         return 0.0
     if isinstance(value, (int, float)):
         return float(value)
@@ -58,7 +58,7 @@ def extract_satker_from_code(kd_bb_val, default_satker="693266"):
     return default_satker
 
 def parse_sakti_excel(contents: bytes):
-    """Ekstraksi cepat & ramah memori Vercel untuk file Buku Besar SAKTI (.xlsx / .xls)"""
+    """Ekstraksi otomatis file Buku Besar SAKTI (.xlsx / .xls) yang dioptimalkan untuk Vercel"""
     try:
         wb = openpyxl.load_workbook(io.BytesIO(contents), data_only=True, read_only=True)
         ws = wb.active
@@ -73,14 +73,16 @@ def parse_sakti_excel(contents: bytes):
             if r_idx < 8:
                 continue
 
+            # Ambil Satker dari Baris 8
             if r_idx == 8:
-                satker_cell = str(row[4] or "").strip() if len(row) > 4 else ""
+                satker_cell = str(row[4] or "").strip() if len(row) > 4 and row[4] is not None else ""
                 if satker_cell:
                     satker_header = satker_cell
                 continue
 
+            # Ambil Akun dari Baris 10
             if r_idx == 10:
-                header_val = str(row[0] or "").strip()
+                header_val = str(row[0] or "").strip() if len(row) > 0 and row[0] is not None else ""
                 if "BUKU BESAR" in header_val:
                     parts = header_val.replace("BUKU BESAR", "").strip().split(" ", 1)
                     kode_akun = parts[0] if len(parts) > 0 else "-"
@@ -94,6 +96,7 @@ def parse_sakti_excel(contents: bytes):
                 col_i = row[8] if len(row) > 8 else None  # DEBET
                 col_j = row[9] if len(row) > 9 else None  # KREDIT
 
+                # Skip header / footer / total
                 if str(col_a or "").startswith("BUKU BESAR") or str(col_a or "").strip() == "TGL JNL":
                     continue
                 if str(col_c or "").strip() == "SALDO":
@@ -125,14 +128,49 @@ def parse_sakti_excel(contents: bytes):
                     })
 
         wb.close()
-        return pd.DataFrame(records), kode_akun, nama_akun
+
+        # Proteksi jika records kosong, buat DataFrame dengan skema kolom lengkap
+        if not records:
+            df = pd.DataFrame(columns=[
+                'col_kode_akun', 'col_nama_akun', 'col_kode_satker',
+                'col_tgl_jurnal', 'col_kode_periode', 'col_no_doc',
+                'col_deskripsi', 'nilai_clean', 'tgl_dt'
+            ])
+        else:
+            df = pd.DataFrame(records)
+
+        return df, kode_akun, nama_akun
+
     except Exception as e:
         raise HTTPException(status_code=400, detail=f"Gagal membaca file Excel SAKTI: {str(e)}")
 
 def process_reconciliation(df: pd.DataFrame, filter_mode: str = 'ALL', target_period: str = '', target_satker: str = 'ALL', is_sakti_excel: bool = False):
+    if df.empty:
+        return {
+            "kode_akun": "-",
+            "nama_akun": "-",
+            "available_satkers": [],
+            "selected_satker": target_satker,
+            "total_rows": 0,
+            "total_unmatched": 0,
+            "total_nilai_unmatched": "0",
+            "main_columns": ['Kode Satker', 'Tanggal Jurnal', 'Kode Periode', 'Nomor Dokumen', 'Deskripsi / Kode BB', 'Nilai'],
+            "main_data": [],
+            "has_resolved_later": False,
+            "total_resolved_later": 0,
+            "total_nilai_resolved_later": "0",
+            "resolved_columns": [],
+            "resolved_data": [],
+            "has_hanging_after": False,
+            "total_hanging_after": 0,
+            "total_nilai_hanging_after": "0",
+            "hanging_columns": [],
+            "hanging_data": []
+        }
+
     if is_sakti_excel:
-        kode_akun_header = str(df['col_kode_akun'].iloc[0]) if not df.empty else "-"
-        nama_akun_header = str(df['col_nama_akun'].iloc[0]) if not df.empty else "-"
+        kode_akun_header = str(df['col_kode_akun'].iloc[0]) if 'col_kode_akun' in df.columns and not df.empty else "-"
+        nama_akun_header = str(df['col_nama_akun'].iloc[0]) if 'col_nama_akun' in df.columns and not df.empty else "-"
         
         col_satker = 'col_kode_satker'
         col_tgl_jurnal = 'col_tgl_jurnal'
@@ -140,8 +178,8 @@ def process_reconciliation(df: pd.DataFrame, filter_mode: str = 'ALL', target_pe
         col_no_doc = 'col_no_doc'
         col_deskripsi = 'col_deskripsi'
         
-        df['satker_str'] = df[col_satker].astype(str).str.strip()
-        df['periode_str'] = df[col_kode_periode].astype(str).str.strip()
+        df['satker_str'] = df[col_satker].astype(str).str.strip() if col_satker in df.columns else "693266"
+        df['periode_str'] = df[col_kode_periode].astype(str).str.strip() if col_kode_periode in df.columns else ""
     else:
         if df.shape[1] < 12:
             raise HTTPException(status_code=400, detail="File CSV tidak memiliki setidaknya 12 kolom (s.d. Kolom L).")
@@ -162,10 +200,10 @@ def process_reconciliation(df: pd.DataFrame, filter_mode: str = 'ALL', target_pe
         df['nilai_clean'] = df[col_l_name].apply(clean_currency)
         df['tgl_dt'] = pd.to_datetime(df[col_tgl_jurnal], errors='coerce', dayfirst=True)
 
-    # Ambil seluruh daftar unik Satker untuk dropdown hasil
+    # Ambil daftar unik Satker untuk dropdown hasil
     available_satkers = sorted([s for s in df['satker_str'].dropna().unique() if s != ""])
 
-    # Filter berdasarkan Satker jika dipilih
+    # Apply Filter Satker jika tidak memilih 'ALL'
     if target_satker and target_satker != 'ALL':
         df = df[df['satker_str'] == target_satker].copy()
 
@@ -231,7 +269,7 @@ def process_reconciliation(df: pd.DataFrame, filter_mode: str = 'ALL', target_pe
                         "nilai_clean": pair_row['nilai_clean']
                     })
 
-    # 3. Post-Period Check (Tabel 3: Penyelesaian / Transaksi Menggantung Pasca Periode X)
+    # 3. Post-Period Check (Tabel 3)
     hanging_list = []
     if filter_mode == 'UNTIL' and target_period:
         post_df = df[df['periode_str'] > target_period].copy()
@@ -282,7 +320,7 @@ def process_reconciliation(df: pd.DataFrame, filter_mode: str = 'ALL', target_pe
                         "nilai_clean": r['nilai_clean']
                     })
 
-    # Output Formatting
+    # Formatting Output Tables
     if not unmatched_main.empty:
         unmatched_main['Nilai'] = unmatched_main['nilai_clean'].apply(format_number_clean)
         unmatched_main['Kode Satker'] = unmatched_main['satker_str']
@@ -469,7 +507,7 @@ async def home_ui():
                 </div>
 
                 <div class="flex items-center space-x-3 w-full sm:w-auto">
-                    <!-- Dropdown Filter Satker yang muncul setelah data selesai diolah -->
+                    <!-- Dropdown Filter Satker -->
                     <div class="flex flex-col">
                         <label class="text-[10px] font-bold uppercase tracking-wider text-slate-400 mb-1">
                             <i class="fa-solid fa-building-columns brand-cyan mr-1"></i> Filter Satker
